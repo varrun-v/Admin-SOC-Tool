@@ -9,6 +9,10 @@ from pydantic import BaseModel
 import os
 import sys
 
+# Track capture status for each agent
+  # {hostname: {"capture": False, "reset": False}}
+
+
 app = FastAPI()
 
 # Enable CORS for frontend access
@@ -37,7 +41,9 @@ agent_tokens = {}        # {hostname: token}
 
 # Global variable to store the latest metrics (system + packets) received from agents
 all_metrics = {}         # { hostname: { "data": {...}, "packets": [...] } }
-
+capture_status = {}
+# Map to track packet capture status per agent
+capture_commands = {}  # {hostname: "start" or "stop"}
 
 # ================== PERSISTENCE FUNCTIONS ==================
 def load_persistence():
@@ -183,6 +189,48 @@ async def receive_metrics(request: Request):
     print("[DEBUG] all_metrics snapshot:", json.dumps(all_metrics, indent=2))
     return {"status": "success", "message": "Data received"}
 
+@app.post("/start-capture")
+async def start_capture(request: Request):
+    try:
+        payload = await request.json()
+        hostname = payload.get("hostname")
+        if not hostname or hostname not in approved_agents:
+            raise HTTPException(status_code=404, detail="Invalid hostname.")
+        capture_commands[hostname] = "start"
+        print(f"[CONTROL] Start capture requested for {hostname}")
+        return {"status": "started"}
+    except Exception as e:
+        print(f"[ERROR] Failed to start capture: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
+@app.post("/stop-capture")
+async def stop_capture(request: Request):
+    try:
+        payload = await request.json()
+        hostname = payload.get("hostname")
+        if not hostname or hostname not in approved_agents:
+            raise HTTPException(status_code=404, detail="Invalid hostname.")
+        capture_commands[hostname] = "stop"
+        print(f"[CONTROL] Stop capture requested for {hostname}")
+        return {"status": "stopped"}
+    except Exception as e:
+        print(f"[ERROR] Failed to stop capture: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
+@app.post("/clear-capture")
+async def clear_capture(request: Request):
+    try:
+        payload = await request.json()
+        hostname = payload.get("hostname")
+        if not hostname or hostname not in approved_agents:
+            raise HTTPException(status_code=404, detail="Invalid hostname.")
+        capture_commands[hostname] = "clear"
+        print(f"[CONTROL] Clear capture requested for {hostname}")
+        return {"status": "cleared"}
+    except Exception as e:
+        print(f"[ERROR] Failed to clear capture: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
 
 # ================== APPROVED LIST ==================
 @app.get("/approved")
@@ -194,14 +242,29 @@ def get_approved_agents():
 # ================== METRICS STREAM ==================
 async def stream_metrics():
     while True:
-        yield f"data: {json.dumps(all_metrics)}\n\n"
+        # Include capture commands in the streamed data
+        data = {
+            "metrics": all_metrics,
+            "commands": capture_commands
+        }
+        yield f"data: {json.dumps(data)}\n\n"
         await asyncio.sleep(1)
+
+@app.get("/commands")
+def get_agent_command(hostname: str):
+    """Allow agent to poll current capture command."""
+    if not hostname or hostname not in approved_agents:
+        raise HTTPException(status_code=403, detail="Invalid hostname.")
+    return {"command": capture_commands.get(hostname, "stop")}
 
 
 @app.get("/metrics-stream")
 def metrics_stream():
     """Endpoint for the frontend to subscribe to real-time metrics updates."""
     return StreamingResponse(stream_metrics(), media_type="text/event-stream")
+
+# ================== CONTROL ENDPOINTS ==================
+from fastapi import Body
 
 
 if __name__ == "__main__":

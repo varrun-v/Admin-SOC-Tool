@@ -133,6 +133,8 @@ export default function SystemDashboard() {
 
   // Agent-captured packets
   const [agentPackets, setAgentPackets] = useState<AgentPacket[]>([])
+  const [packetsCleared, setPacketsCleared] = useState(false);
+
 
   useEffect(() => {
     setMounted(true)
@@ -192,7 +194,7 @@ export default function SystemDashboard() {
   // Fetch approved agents
   const fetchApprovedAgents = useCallback(async () => {
     try {
-      const response = await fetch("https://admin-server-33le.onrender.com/approved")
+      const response = await fetch("http://localhost:8123/approved")
       if (response.ok) {
         const data = await response.json()
         const agents = Object.entries(data).map(([hostname, ip]) => ({
@@ -214,25 +216,27 @@ export default function SystemDashboard() {
     fetchApprovedAgents()
 
     // SSE for metrics
-    const eventSource = new EventSource("https://admin-server-33le.onrender.com/metrics-stream")
+    const eventSource = new EventSource("http://localhost:8123/metrics-stream")
     setConnectionStatus("connecting")
 
     eventSource.onmessage = (event) => {
       try {
-        const rawData = JSON.parse(event.data);
+        const payload = JSON.parse(event.data);
+        const rawMetrics = payload.metrics;  // Corrected
     
         const transformedData: Record<string, MetricsResponse> = {};
     
-        Object.entries(rawData).forEach(([hostname, agentObj]) => {
-          // ----- 1) system metrics -----
+        Object.entries(rawMetrics).forEach(([hostname, agentObj]) => {
           const metrics = (agentObj as any).data as MetricsResponse;
           transformedData[hostname] = metrics;
     
-          // ----- 2) packets -------------
           const packets = (agentObj as any).packets;
           if (hostname === selectedAgent?.hostname && Array.isArray(packets)) {
-            setAgentPackets(packets);
+            if (!packetsCleared) {
+              setAgentPackets(packets);
+            }
           }
+          
         });
     
         setAllMetrics(prev => ({ ...prev, ...transformedData }));
@@ -244,6 +248,7 @@ export default function SystemDashboard() {
         setError("Connection to server lost");
       }
     };
+    
     
     
     
@@ -315,7 +320,52 @@ export default function SystemDashboard() {
     const i = Math.floor(Math.log(bytes) / Math.log(k))
     return Number.parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + " " + sizes[i]
   }
-
+  const handleStartCapture = async () => {
+    if (!selectedAgent) return;
+    await fetch("http://localhost:8123/start-capture", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ hostname: selectedAgent.hostname }),
+    });
+  };
+  
+  const handleStopCapture = async () => {
+    if (!selectedAgent) return;
+    await fetch("http://localhost:8123/stop-capture", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ hostname: selectedAgent.hostname }),
+    });
+  };
+  
+  const handleClearCapture = async () => {
+    if (!selectedAgent) return;
+  
+    try {
+      await fetch("http://localhost:8123/clear-capture", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hostname: selectedAgent.hostname }),
+      });
+  
+      setAgentPackets([]); // Optimistically clear in UI
+    } catch (err) {
+      console.error("Failed to clear capture:", err);
+    }
+  };
+  
+  
+  
+  const handleSaveCapture = () => {
+    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(agentPackets, null, 2));
+    const downloadAnchorNode = document.createElement('a');
+    downloadAnchorNode.setAttribute("href", dataStr);
+    downloadAnchorNode.setAttribute("download", `${selectedAgent?.hostname}_packets.json`);
+    document.body.appendChild(downloadAnchorNode);
+    downloadAnchorNode.click();
+    downloadAnchorNode.remove();
+  };
+  
   return (
     <div className="container py-6 space-y-6">
       {/* Page Header */}
@@ -349,9 +399,16 @@ export default function SystemDashboard() {
             </DropdownMenuTrigger>
             <DropdownMenuContent className="w-56">
               {approvedAgents.map((agent) => (
-                <DropdownMenuItem key={agent.hostname} onSelect={() => setSelectedAgent(agent)}>
-                  {agent.hostname}
-                </DropdownMenuItem>
+                <DropdownMenuItem
+                key={agent.hostname}
+                onSelect={() => {
+                  setSelectedAgent(agent);
+                  setAgentPackets([]); // Clear previous agent's packets
+                }}
+              >
+                {agent.hostname}
+              </DropdownMenuItem>
+              
               ))}
             </DropdownMenuContent>
           </DropdownMenu>
@@ -849,7 +906,37 @@ export default function SystemDashboard() {
               </CardTitle>
               <CardDescription>Packets returned by the agent.exe from this device</CardDescription>
             </CardHeader>
-            <CardContent className="p-0">
+            <CardContent className="p-4 space-y-4">
+              {/* Control Buttons */}
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  variant="default"
+                  className="bg-green-600 hover:bg-green-700 text-white"
+                  onClick={() => handleStartCapture()}
+                >
+                  Start Capture
+                </Button>
+                <Button
+                  variant="destructive"
+                  onClick={() => handleStopCapture()}
+                >
+                  Stop Capture
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => handleClearCapture()}
+                >
+                  Clear
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => handleSaveCapture()}
+                >
+                  Save As
+                </Button>
+              </div>
+
+              {/* Table */}
               <div
                 className="overflow-auto rounded-md"
                 style={{ height: "calc(50vh)" }}
